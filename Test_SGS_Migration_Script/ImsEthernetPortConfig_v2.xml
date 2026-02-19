@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<NetworkInterfaceConfig version="2">
+  <NetworkInterface>
+    <MacAddress>00:0F:11:58:23:6D</MacAddress>
+    <StaticNetworkConfig>
+      <IpAddress>192.168.12.2</IpAddress>
+      <Netmask>255.255.255.0</Netmask>
+    </StaticNetworkConfig>
+  </NetworkInterface>
+</NetworkInterfaceConfig>
