@@ -141,6 +141,43 @@ def validate_repo_with_token(
     return False, f"Unexpected validation response: HTTP {response.status_code}."
 
 
+def test_artifact_download(
+    base_url: str,
+    repo: str,
+    artifact_path: str,
+    access_token: str,
+    verify_ssl: bool,
+    timeout: int = 30,
+) -> Tuple[bool, str]:
+    """
+    Test downloading an artifact using X-JFrog-Art-Api header.
+    artifact_path should be like: <version>/<zip-file-name>
+    """
+    headers = {"X-JFrog-Art-Api": access_token}
+    artifact_url = f"{base_url.rstrip('/')}/artifactory/{repo}/{artifact_path.lstrip('/')}"
+
+    try:
+        # Use HEAD request to check access without downloading the full file
+        response = requests.head(
+            artifact_url,
+            headers=headers,
+            timeout=timeout,
+            verify=verify_ssl,
+        )
+    except requests.RequestException as exc:
+        return False, f"Artifact access test failed: {exc}"
+
+    if response.status_code == 200:
+        content_length = response.headers.get("Content-Length", "unknown")
+        return True, f"Token can access artifact at '{repo}/{artifact_path}' (size: {content_length} bytes)."
+    if response.status_code == 404:
+        return False, f"Artifact '{repo}/{artifact_path}' was not found."
+    if response.status_code in (401, 403):
+        return False, f"Token does not have download access to '{repo}/{artifact_path}' (HTTP {response.status_code})."
+
+    return False, f"Unexpected response: HTTP {response.status_code}."
+
+
 def compute_expiry(expires_in: int) -> Tuple[str, str]:
     created_at = utc_now()
     expires_at = created_at + timedelta(seconds=expires_in)
@@ -153,6 +190,7 @@ def print_result(
     result: Dict[str, Any],
     verify_ssl: bool,
     base_url: str,
+    artifact_path: str = "",
 ) -> int:
     access_token = result.get("access_token")
     refresh_token = result.get("refresh_token")
@@ -185,7 +223,22 @@ def print_result(
         print("2. Token validation for repo: SKIPPED")
         print("   No repository provided for validation.")
 
-    print("3. Token expiry:")
+    if access_token and repo and artifact_path:
+        dl_ok, dl_message = test_artifact_download(
+            base_url=base_url,
+            repo=repo,
+            artifact_path=artifact_path,
+            access_token=access_token,
+            verify_ssl=verify_ssl,
+        )
+        print(f"3. Artifact download test (X-JFrog-Art-Api): {'SUCCESS' if dl_ok else 'FAILED'}")
+        print(f"   {dl_message}")
+        ok = ok and dl_ok
+    else:
+        print("3. Artifact download test: SKIPPED")
+        print("   No artifact path provided for download test.")
+
+    print("4. Token expiry:")
     print(f"   Created at (UTC): {created_at}")
     print(f"   Expires at (UTC): {expires_at}")
     print(f"   Expires in: {expires_in} seconds")
@@ -220,6 +273,7 @@ def main() -> int:
             username = prompt_nonempty("Username: ")
             password = getpass.getpass("Password (hidden): ")
             repo = prompt_nonempty("Repository name to validate: ")
+            artifact_path = input("Artifact path to test download (e.g. <version>/<file.zip>) [optional]: ").strip()
             expires_in = prompt_int("Token expiry in seconds", 3600)
             refreshable = prompt_yes_no("Make token refreshable?", default=True)
 
@@ -238,11 +292,13 @@ def main() -> int:
                 result=result,
                 verify_ssl=verify_ssl,
                 base_url=base_url,
+                artifact_path=artifact_path,
             )
 
         elif choice == "2":
             existing_refresh_token = getpass.getpass("Refresh token (hidden): ")
             repo = input("Repository name to validate [optional]: ").strip()
+            artifact_path = input("Artifact path to test download (e.g. <version>/<file.zip>) [optional]: ").strip() if repo else ""
 
             result = refresh_token_request(
                 base_url=base_url,
@@ -256,6 +312,7 @@ def main() -> int:
                 result=result,
                 verify_ssl=verify_ssl,
                 base_url=base_url,
+                artifact_path=artifact_path,
             )
 
         else:
