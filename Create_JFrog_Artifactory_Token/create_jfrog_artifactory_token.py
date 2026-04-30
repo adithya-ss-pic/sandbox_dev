@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import getpass
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Tuple
 
 import requests
+
+REPOSITORIES = [
+    "dcp-sgs-local",
+    "dcp-sgs-docker-local",
+    "dps-maven-remote",
+    "dps-python-remote",
+    "dps-sgse-maven-virtual"
+]
 
 
 def utc_now() -> datetime:
@@ -190,25 +197,17 @@ def print_result(
     result: Dict[str, Any],
     verify_ssl: bool,
     base_url: str,
-    artifact_path: str = "",
 ) -> int:
     access_token = result.get("access_token")
     refresh_token = result.get("refresh_token")
     token_id = result.get("token_id")
-    scope = result.get("scope")
-    token_type = result.get("token_type")
     expires_in = int(result.get("expires_in", 0))
 
-    print(f"\n1. {operation} status: SUCCESS")
-    if token_id:
-        print(f"   Token ID: {token_id}")
-    if token_type:
-        print(f"   Token type: {token_type}")
-    if scope:
-        print(f"   Scope: {scope}")
+    print(f"  {operation}: SUCCESS")
 
     created_at, expires_at = compute_expiry(expires_in)
 
+    ok = True
     if access_token and repo:
         ok, message = validate_repo_with_token(
             base_url=base_url,
@@ -216,45 +215,29 @@ def print_result(
             access_token=access_token,
             verify_ssl=verify_ssl,
         )
-        print(f"2. Token validation for repo: {'SUCCESS' if ok else 'FAILED'}")
-        print(f"   {message}")
-    else:
-        ok = True
-        print("2. Token validation for repo: SKIPPED")
-        print("   No repository provided for validation.")
+        print(f"  Validation: {'PASSED' if ok else 'FAILED'} - {message}")
 
-    if access_token and repo and artifact_path:
-        dl_ok, dl_message = test_artifact_download(
-            base_url=base_url,
-            repo=repo,
-            artifact_path=artifact_path,
-            access_token=access_token,
-            verify_ssl=verify_ssl,
-        )
-        print(f"3. Artifact download test (X-JFrog-Art-Api): {'SUCCESS' if dl_ok else 'FAILED'}")
-        print(f"   {dl_message}")
-        ok = ok and dl_ok
-    else:
-        print("3. Artifact download test: SKIPPED")
-        print("   No artifact path provided for download test.")
+    print(f"  Expires at: {expires_at} ({expires_in}s)")
 
-    print("4. Token expiry:")
-    print(f"   Created at (UTC): {created_at}")
-    print(f"   Expires at (UTC): {expires_at}")
-    print(f"   Expires in: {expires_in} seconds")
-
-    print("\nReturned credentials:")
-    safe = {
+    creds = {k: v for k, v in {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "expires_in": expires_in,
-        "scope": scope,
         "token_id": token_id,
-        "token_type": token_type,
-    }
-    print(json.dumps(safe, indent=2))
+    }.items() if v}
+    print(f"  Credentials: {json.dumps(creds, indent=4)}")
 
     return 0 if ok else 2
+
+
+def _print_summary(results: Dict[str, str]) -> None:
+    passed = [r for r, s in results.items() if s == "PASSED"]
+    failed = [r for r, s in results.items() if s == "FAILED"]
+
+    print(f"\n--- SUMMARY ({len(passed)}/{len(results)} passed) ---")
+    for repo, status in results.items():
+        print(f"  [{'PASS' if status == 'PASSED' else 'FAIL'}] {repo}")
+    if failed:
+        print(f"\n  Failed: {', '.join(failed)}")
 
 
 def main() -> int:
@@ -268,60 +251,76 @@ def main() -> int:
     base_url = prompt_nonempty("JFrog URL (e.g. https://your-company.jfrog.io): ")
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
-    try:
-        if choice == "1":
-            username = prompt_nonempty("Username: ")
-            password = getpass.getpass("Password (hidden): ")
-            repo = prompt_nonempty("Repository name to validate: ")
-            artifact_path = input("Artifact path to test download (e.g. <version>/<file.zip>) [optional]: ").strip()
-            expires_in = prompt_int("Token expiry in seconds", 3600)
-            refreshable = prompt_yes_no("Make token refreshable?", default=True)
+    if choice == "1":
+        username = prompt_nonempty("Username: ")
+        password = getpass.getpass("Password (hidden): ")
+        expires_in = prompt_int("Token expiry in seconds", 3600)
+        refreshable = prompt_yes_no("Make token refreshable?", default=True)
 
-            result = create_token(
-                base_url=base_url,
-                username=username,
-                password=password,
-                expires_in=expires_in,
-                refreshable=refreshable,
-                verify_ssl=verify_ssl,
-            )
+        results_summary: Dict[str, str] = {}
 
-            return print_result(
-                operation="Token creation",
-                repo=repo,
-                result=result,
-                verify_ssl=verify_ssl,
-                base_url=base_url,
-                artifact_path=artifact_path,
-            )
+        for repo in REPOSITORIES:
+            print(f"\n[{repo}]")
 
-        elif choice == "2":
-            existing_refresh_token = getpass.getpass("Refresh token (hidden): ")
-            repo = input("Repository name to validate [optional]: ").strip()
-            artifact_path = input("Artifact path to test download (e.g. <version>/<file.zip>) [optional]: ").strip() if repo else ""
+            try:
+                result = create_token(
+                    base_url=base_url,
+                    username=username,
+                    password=password,
+                    expires_in=expires_in,
+                    refreshable=refreshable,
+                    verify_ssl=verify_ssl,
+                )
 
-            result = refresh_token_request(
-                base_url=base_url,
-                refresh_token=existing_refresh_token,
-                verify_ssl=verify_ssl,
-            )
+                exit_code = print_result(
+                    operation="Token creation",
+                    repo=repo,
+                    result=result,
+                    verify_ssl=verify_ssl,
+                    base_url=base_url,
+                )
+                results_summary[repo] = "PASSED" if exit_code == 0 else "FAILED"
 
-            return print_result(
-                operation="Token refresh",
-                repo=repo,
-                result=result,
-                verify_ssl=verify_ssl,
-                base_url=base_url,
-                artifact_path=artifact_path,
-            )
+            except Exception as exc:
+                print(f"\n  ERROR for '{repo}': {exc}")
+                results_summary[repo] = "FAILED"
 
-        else:
-            print("Invalid choice. Please run the script again and choose 1 or 2.")
-            return 1
+        _print_summary(results_summary)
+        return 0 if all(v == "PASSED" for v in results_summary.values()) else 2
 
-    except Exception as exc:
-        print("\n1. Operation status: FAILED")
-        print(f"Error: {exc}")
+    elif choice == "2":
+        existing_refresh_token = getpass.getpass("Refresh token (hidden): ")
+
+        results_summary: Dict[str, str] = {}
+
+        for repo in REPOSITORIES:
+            print(f"\n[{repo}]")
+
+            try:
+                result = refresh_token_request(
+                    base_url=base_url,
+                    refresh_token=existing_refresh_token,
+                    verify_ssl=verify_ssl,
+                )
+
+                exit_code = print_result(
+                    operation="Token refresh",
+                    repo=repo,
+                    result=result,
+                    verify_ssl=verify_ssl,
+                    base_url=base_url,
+                )
+                results_summary[repo] = "PASSED" if exit_code == 0 else "FAILED"
+
+            except Exception as exc:
+                print(f"\n  ERROR for '{repo}': {exc}")
+                results_summary[repo] = "FAILED"
+
+        _print_summary(results_summary)
+        return 0 if all(v == "PASSED" for v in results_summary.values()) else 2
+
+    else:
+        print("Invalid choice. Please run the script again and choose 1 or 2.")
         return 1
 
 
