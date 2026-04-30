@@ -179,6 +179,26 @@ def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
         return False, str(exc)
 
 
+def retrieve_from_pass(repo: str) -> Tuple[bool, str]:
+    entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
+    full_path = f"{PASS_FOLDER}/{entry_name}"
+
+    try:
+        proc = subprocess.run(
+            ["pass", "show", full_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return True, proc.stdout.strip()
+        return False, proc.stderr.strip() or "No token found"
+    except FileNotFoundError:
+        return False, "pass is not installed"
+    except Exception as exc:
+        return False, str(exc)
+
+
 ## ---------- Processing & Output ---------- ##
 
 def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
@@ -227,6 +247,84 @@ def collect_repos() -> List[str]:
     return REPOSITORIES + [r for r in extra_repos if r not in REPOSITORIES]
 
 
+## ---------- Check & Regenerate ---------- ##
+
+def check_token_expired(repo: str, verify_ssl: bool) -> Tuple[bool, str]:
+    """Returns (is_expired, message). is_expired=True means token needs regeneration."""
+    found, token = retrieve_from_pass(repo)
+    if not found:
+        return True, f"No existing token in pass: {token}"
+
+    valid, msg = validate_repo(repo, token, verify_ssl)
+    if valid:
+        return False, "Token is still valid."
+    return True, f"Token expired or invalid: {msg}"
+
+
+def check_and_regenerate(
+    all_repos: List[str],
+    username: str,
+    password: str,
+    expires_in: int,
+    refreshable: bool,
+    verify_ssl: bool,
+) -> Dict[str, str]:
+    """Check each repo's token; regenerate if expired. Returns status dict."""
+    results: Dict[str, str] = {}
+    regenerated: List[str] = []
+    still_valid: List[str] = []
+
+    for repo in all_repos:
+        print(f"\n[{repo}]")
+        expired, msg = check_token_expired(repo, verify_ssl)
+        print(f"  Status: {msg}")
+
+        if not expired:
+            results[repo] = "VALID"
+            still_valid.append(repo)
+            continue
+
+        # Token is expired or missing - regenerate
+        print(f"  Regenerating token...")
+        try:
+            result = create_token(username, password, expires_in, refreshable, verify_ssl)
+            ok = process_repo(repo, result, verify_ssl)
+            if ok:
+                results[repo] = "REGENERATED"
+                regenerated.append(repo)
+            else:
+                results[repo] = "FAILED"
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            results[repo] = "FAILED"
+
+    # --- Final report ---
+    print("\n" + "=" * 50)
+    print("TOKEN STATUS REPORT")
+    print("=" * 50)
+
+    if still_valid:
+        print(f"\n  Still valid ({len(still_valid)}):")
+        for r in still_valid:
+            print(f"    - {r}")
+
+    if regenerated:
+        print(f"\n  Regenerated ({len(regenerated)}):")
+        for r in regenerated:
+            print(f"    - {r}")
+
+    failed = [r for r, s in results.items() if s == "FAILED"]
+    if failed:
+        print(f"\n  Failed ({len(failed)}):")
+        for r in failed:
+            print(f"    - {r}")
+
+    if not regenerated and not failed:
+        print("\n  All tokens are still valid. No action needed.")
+
+    return results
+
+
 ## ---------- Main ---------- ##
 
 def main() -> int:
@@ -235,8 +333,9 @@ def main() -> int:
     print("1. Create a new token")
     print("2. Refresh an existing token")
     print("3. Test artifact download")
+    print("4. Check & regenerate expired tokens")
 
-    choice = input("Choose an option [1/2/3]: ").strip()
+    choice = input("Choose an option [1/2/3/4]: ").strip()
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
     results: Dict[str, str] = {}
@@ -281,6 +380,19 @@ def main() -> int:
         ok, msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
         print(f"  Download test: {'PASSED' if ok else 'FAILED'} - {msg}")
         results[repo] = "PASSED" if ok else "FAILED"
+
+    elif choice == "4":
+        all_repos = collect_repos()
+        username = prompt_nonempty("Username: ")
+        password = getpass.getpass("Password (hidden): ")
+        expires_in = prompt_int("Token expiry in seconds", 3600)
+        refreshable = prompt_yes_no("Make token refreshable?", default=True)
+
+        results = check_and_regenerate(
+            all_repos, username, password, expires_in, refreshable, verify_ssl
+        )
+        passed = all(v in ("VALID", "REGENERATED") for v in results.values())
+        return 0 if passed else 2
 
     else:
         print("Invalid choice.")
