@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import getpass
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Tuple
 
 import requests
+
+BASE_URL = "https://artifactory-ehv.ta.philips.com"
 
 REPOSITORIES = [
     "dcp-sgs-local",
@@ -16,6 +19,16 @@ REPOSITORIES = [
     "dps-python-remote",
     "dps-sgse-maven-virtual"
 ]
+
+PASS_ENTRY_NAMES = {
+    "dcp-sgs-local": "dcp-sgs-local-api-token",
+    "dcp-sgs-docker-local": "dcp-sgs-docker-local-api-token",
+    "dps-maven-remote": "dps-maven-remote-api-token",
+    "dps-python-remote": "dps-python-remote-api-token",
+    "dps-sgse-maven-virtual": "dps-sgse-maven-virtual-api-token",
+}
+
+PASS_FOLDER = "philips-artifactory"
 
 
 def utc_now() -> datetime:
@@ -191,6 +204,29 @@ def compute_expiry(expires_in: int) -> Tuple[str, str]:
     return created_at.isoformat(), expires_at.isoformat()
 
 
+def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
+    entry_name = PASS_ENTRY_NAMES.get(repo)
+    if not entry_name:
+        return False, f"No pass entry name configured for '{repo}'"
+
+    full_path = f"{PASS_FOLDER}/{entry_name}"
+    try:
+        proc = subprocess.run(
+            ["pass", "insert", "--echo", "--force", full_path],
+            input=token,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            return True, f"Stored in pass: {full_path}"
+        return False, f"pass insert failed: {proc.stderr.strip()}"
+    except FileNotFoundError:
+        return False, "pass is not installed"
+    except Exception as exc:
+        return False, f"Failed to store in pass: {exc}"
+
+
 def print_result(
     operation: str,
     repo: str,
@@ -216,6 +252,12 @@ def print_result(
             verify_ssl=verify_ssl,
         )
         print(f"  Validation: {'PASSED' if ok else 'FAILED'} - {message}")
+
+    if ok and access_token:
+        stored, store_msg = store_in_pass(repo, access_token)
+        print(f"  Pass store: {'OK' if stored else 'FAILED'} - {store_msg}")
+        if not stored:
+            ok = False
 
     print(f"  Expires at: {expires_at} ({expires_in}s)")
 
@@ -248,7 +290,6 @@ def main() -> int:
 
     choice = input("Choose an option [1/2]: ").strip()
 
-    base_url = prompt_nonempty("JFrog URL (e.g. https://your-company.jfrog.io): ")
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
     if choice == "1":
@@ -264,7 +305,7 @@ def main() -> int:
 
             try:
                 result = create_token(
-                    base_url=base_url,
+                    base_url=BASE_URL,
                     username=username,
                     password=password,
                     expires_in=expires_in,
@@ -277,7 +318,7 @@ def main() -> int:
                     repo=repo,
                     result=result,
                     verify_ssl=verify_ssl,
-                    base_url=base_url,
+                    base_url=BASE_URL,
                 )
                 results_summary[repo] = "PASSED" if exit_code == 0 else "FAILED"
 
@@ -298,7 +339,7 @@ def main() -> int:
 
             try:
                 result = refresh_token_request(
-                    base_url=base_url,
+                    base_url=BASE_URL,
                     refresh_token=existing_refresh_token,
                     verify_ssl=verify_ssl,
                 )
@@ -308,7 +349,7 @@ def main() -> int:
                     repo=repo,
                     result=result,
                     verify_ssl=verify_ssl,
-                    base_url=base_url,
+                    base_url=BASE_URL,
                 )
                 results_summary[repo] = "PASSED" if exit_code == 0 else "FAILED"
 
