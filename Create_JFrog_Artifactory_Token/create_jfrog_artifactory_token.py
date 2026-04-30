@@ -204,10 +204,12 @@ def compute_expiry(expires_in: int) -> Tuple[str, str]:
     return created_at.isoformat(), expires_at.isoformat()
 
 
+def get_pass_entry_name(repo: str) -> str:
+    return PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
+
+
 def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
-    entry_name = PASS_ENTRY_NAMES.get(repo)
-    if not entry_name:
-        return False, f"No pass entry name configured for '{repo}'"
+    entry_name = get_pass_entry_name(repo)
 
     full_path = f"{PASS_FOLDER}/{entry_name}"
     try:
@@ -292,6 +294,10 @@ def main() -> int:
 
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
+    extra = input("Additional repos (comma-separated) [optional]: ").strip()
+    extra_repos = [r.strip() for r in extra.split(",") if r.strip()] if extra else []
+    all_repos = REPOSITORIES + [r for r in extra_repos if r not in REPOSITORIES]
+
     if choice == "1":
         username = prompt_nonempty("Username: ")
         password = getpass.getpass("Password (hidden): ")
@@ -300,7 +306,7 @@ def main() -> int:
 
         results_summary: Dict[str, str] = {}
 
-        for repo in REPOSITORIES:
+        for repo in all_repos:
             print(f"\n[{repo}]")
 
             try:
@@ -334,7 +340,7 @@ def main() -> int:
 
         results_summary: Dict[str, str] = {}
 
-        for repo in REPOSITORIES:
+        for repo in all_repos:
             print(f"\n[{repo}]")
 
             try:
