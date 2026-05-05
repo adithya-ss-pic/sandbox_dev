@@ -385,11 +385,10 @@ def main() -> int:
         all_repos = collect_repos()
         username = prompt_nonempty("Username: ")
         password = getpass.getpass("Password (hidden): ")
-        expires_in = prompt_int("Token expiry in seconds", 3600)
-        refreshable = prompt_yes_no("Make token refreshable?", default=True)
 
+        # When a token has to be regenerated, we will use a default of 7 days for expiry and make it refreshable.
         results = check_and_regenerate(
-            all_repos, username, password, expires_in, refreshable, verify_ssl
+            all_repos, username, password, 604800, True, verify_ssl
         )
         passed = all(v in ("VALID", "REGENERATED") for v in results.values())
         return 0 if passed else 2
