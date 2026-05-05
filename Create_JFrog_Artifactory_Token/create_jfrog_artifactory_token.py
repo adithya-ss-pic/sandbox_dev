@@ -249,16 +249,16 @@ def collect_repos() -> List[str]:
 
 ## ---------- Check & Regenerate ---------- ##
 
-def check_token_expired(repo: str, verify_ssl: bool) -> Tuple[bool, str]:
-    """Returns (is_expired, message). is_expired=True means token needs regeneration."""
+def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
+    """Returns (status, message). status is 'valid', 'expired', or 'missing'."""
     found, token = retrieve_from_pass(repo)
     if not found:
-        return True, f"No existing token in pass: {token}"
+        return "missing", f"No existing token found in credential store"
 
     valid, msg = validate_repo(repo, token, verify_ssl)
     if valid:
-        return False, "Token is still valid."
-    return True, f"Token expired or invalid: {msg}"
+        return "valid", "Token is active and valid"
+    return "expired", f"Token is expired or no longer valid ({msg})"
 
 
 def check_and_regenerate(
@@ -271,27 +271,37 @@ def check_and_regenerate(
 ) -> Dict[str, str]:
     """Check each repo's token; regenerate if expired. Returns status dict."""
     results: Dict[str, str] = {}
-    regenerated: List[str] = []
     still_valid: List[str] = []
+    generated_new: List[str] = []
+    regenerated: List[str] = []
 
     for repo in all_repos:
         print(f"\n[{repo}]")
-        expired, msg = check_token_expired(repo, verify_ssl)
-        print(f"  Status: {msg}")
+        status, msg = check_token_status(repo, verify_ssl)
+        print(f"  Check: {msg}")
 
-        if not expired:
+        if status == "valid":
+            print(f"  Action: No action required")
             results[repo] = "VALID"
             still_valid.append(repo)
             continue
 
-        # Token is expired or missing - regenerate
-        print(f"  Regenerating token...")
+        # Token is expired or missing - generate a new one
+        if status == "missing":
+            print(f"  Action: Generating new token...")
+        else:
+            print(f"  Action: Regenerating expired token...")
+
         try:
             result = create_token(username, password, expires_in, refreshable, verify_ssl)
             ok = process_repo(repo, result, verify_ssl)
             if ok:
-                results[repo] = "REGENERATED"
-                regenerated.append(repo)
+                if status == "missing":
+                    results[repo] = "GENERATED"
+                    generated_new.append(repo)
+                else:
+                    results[repo] = "REGENERATED"
+                    regenerated.append(repo)
             else:
                 results[repo] = "FAILED"
         except Exception as exc:
@@ -304,12 +314,17 @@ def check_and_regenerate(
     print("=" * 50)
 
     if still_valid:
-        print(f"\n  Still valid ({len(still_valid)}):")
+        print(f"\n  Active - no action taken ({len(still_valid)}):")
         for r in still_valid:
             print(f"    - {r}")
 
+    if generated_new:
+        print(f"\n  Not found - newly generated ({len(generated_new)}):")
+        for r in generated_new:
+            print(f"    - {r}")
+
     if regenerated:
-        print(f"\n  Regenerated ({len(regenerated)}):")
+        print(f"\n  Expired - regenerated ({len(regenerated)}):")
         for r in regenerated:
             print(f"    - {r}")
 
@@ -319,8 +334,8 @@ def check_and_regenerate(
         for r in failed:
             print(f"    - {r}")
 
-    if not regenerated and not failed:
-        print("\n  All tokens are still valid. No action needed.")
+    if not generated_new and not regenerated and not failed:
+        print("\n  All tokens are active and valid. No action was needed.")
 
     return results
 
@@ -349,6 +364,7 @@ def main() -> int:
 
         for repo in all_repos:
             print(f"\n[{repo}]")
+            print(f"  Mode: Manual token creation (user-initiated)")
             try:
                 result = create_token(username, password, expires_in, refreshable, verify_ssl)
                 ok = process_repo(repo, result, verify_ssl)
@@ -363,6 +379,7 @@ def main() -> int:
 
         for repo in all_repos:
             print(f"\n[{repo}]")
+            print(f"  Mode: Manual token refresh (user-initiated)")
             try:
                 result = refresh_token(refresh_tok, verify_ssl)
                 ok = process_repo(repo, result, verify_ssl)
@@ -390,7 +407,7 @@ def main() -> int:
         results = check_and_regenerate(
             all_repos, username, password, 604800, True, verify_ssl
         )
-        passed = all(v in ("VALID", "REGENERATED") for v in results.values())
+        passed = all(v in ("VALID", "GENERATED", "REGENERATED") for v in results.values())
         return 0 if passed else 2
 
     else:
