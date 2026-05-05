@@ -132,6 +132,30 @@ def validate_repo(repo: str, access_token: str, verify_ssl: bool) -> Tuple[bool,
     return False, f"Unexpected HTTP {response.status_code}."
 
 
+def test_artifact_download(
+    repo: str,
+    artifact_path: str,
+    access_token: str,
+    verify_ssl: bool,
+) -> Tuple[bool, str]:
+    headers = {"X-JFrog-Art-Api": access_token}
+    url = f"{BASE_URL}/artifactory/{repo}/{artifact_path.lstrip('/')}"
+
+    try:
+        response = requests.head(url, headers=headers, timeout=30, verify=verify_ssl)
+    except requests.RequestException as exc:
+        return False, str(exc)
+
+    if response.status_code == 200:
+        size = response.headers.get("Content-Length", "unknown")
+        return True, f"Accessible ({size} bytes)."
+    if response.status_code == 404:
+        return False, "Artifact not found."
+    if response.status_code in (401, 403):
+        return False, f"Access denied (HTTP {response.status_code})."
+    return False, f"Unexpected HTTP {response.status_code}."
+
+
 ## ---------- Communicate with pass ---------- ##
 
 def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
@@ -210,8 +234,9 @@ def main() -> int:
     print("-------------------")
     print("1. Create a new token")
     print("2. Refresh an existing token")
+    print("3. Test artifact download")
 
-    choice = input("Choose an option [1/2]: ").strip()
+    choice = input("Choose an option [1/2/3]: ").strip()
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
     all_repos = collect_repos()
 
@@ -245,6 +270,16 @@ def main() -> int:
             except Exception as exc:
                 print(f"  ERROR: {exc}")
                 results[repo] = "FAILED"
+
+    elif choice == "3":
+        access_token = getpass.getpass("Access token (hidden): ")
+        repo = prompt_nonempty("Repository name: ")
+        artifact_path = prompt_nonempty("Artifact path (e.g. <version>/<file.zip>): ")
+
+        print(f"\n[{repo}/{artifact_path}]")
+        ok, msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
+        print(f"  Download test: {'PASSED' if ok else 'FAILED'} - {msg}")
+        results[repo] = "PASSED" if ok else "FAILED"
 
     else:
         print("Invalid choice.")
