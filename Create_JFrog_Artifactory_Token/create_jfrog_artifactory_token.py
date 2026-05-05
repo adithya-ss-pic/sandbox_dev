@@ -238,11 +238,11 @@ def main() -> int:
 
     choice = input("Choose an option [1/2/3]: ").strip()
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
+    all_repos = collect_repos()
 
     results: Dict[str, str] = {}
 
     if choice == "1":
-        all_repos = collect_repos()
         username = prompt_nonempty("Username: ")
         password = getpass.getpass("Password (hidden): ")
         expires_in = prompt_int("Token expiry in seconds", 3600)
@@ -259,7 +259,6 @@ def main() -> int:
                 results[repo] = "FAILED"
 
     elif choice == "2":
-        all_repos = collect_repos()
         refresh_tok = getpass.getpass("Refresh token (hidden): ")
 
         for repo in all_repos:
