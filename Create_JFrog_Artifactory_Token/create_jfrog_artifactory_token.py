@@ -337,9 +337,6 @@ def main() -> int:
 
     choice = input("Choose an option [1/2/3/4]: ").strip()
     verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
-    all_repos = collect_repos()
-
-    results: Dict[str, str] = {}
 
     results: Dict[str, str] = {}
 
