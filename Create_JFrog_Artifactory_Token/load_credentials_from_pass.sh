@@ -32,6 +32,13 @@ get_credential() {
 
 echo "Loading credentials from pass..."
 
+# Run the token utility in auto mode to check/refresh/regenerate tokens
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$SCRIPT_DIR/create_jfrog_artifactory_token.py" --auto
+if [ $? -ne 0 ]; then
+    echo "WARNING: Token auto-refresh encountered errors (see above). Proceeding with available tokens."
+fi
+
 export RT_PYTHON_REMOTE_USER=$(get_credential "code1-id")
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to load RT_PYTHON_REMOTE_USER"

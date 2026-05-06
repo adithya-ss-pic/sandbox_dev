@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import getpass
 import json
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
@@ -29,6 +31,26 @@ PASS_ENTRY_NAMES = {
     "dps-maven-remote": "dps-maven-remote-api-token",
     "dps-python-remote": "dps-python-remote-api-token",
     "dps-sgse-maven-virtual": "dps-sgse-maven-virtual-api-token",
+}
+
+PASS_REFRESH_TOKEN_NAMES = {
+    "dcp-sgs-local": "dcp-sgs-local-refresh-token",
+    "dcp-sgs-docker-local": "dcp-sgs-docker-local-refresh-token",
+    "dps-maven-remote": "dps-maven-remote-refresh-token",
+    "dps-python-remote": "dps-python-remote-refresh-token",
+    "dps-sgse-maven-virtual": "dps-sgse-maven-virtual-refresh-token",
+}
+
+# Credentials stored in pass for non-interactive (auto) mode
+PASS_CREDENTIAL_ENTRIES = {
+    "username": "code1-id",
+    "password": "code1-password",
+}
+
+# Artifact paths for smoke testing after token refresh/creation
+ARTIFACT_SMOKE_TESTS = {
+    "dps-python-remote": "packages/packages.json",
+    "dps-maven-remote": "org/maven-metadata.xml",
 }
 
 ## ---------- Prompts ---------- ##
@@ -158,14 +180,30 @@ def test_artifact_download(
 
 ## ---------- Communicate with pass ---------- ##
 
-def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
-    entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
-    full_path = f"{PASS_FOLDER}/{entry_name}"
+def _pass_show(full_path: str) -> Tuple[bool, str]:
+    """Low-level pass show. Returns (success, value_or_error)."""
+    try:
+        proc = subprocess.run(
+            ["pass", "show", full_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return True, proc.stdout.strip()
+        return False, proc.stderr.strip() or "Entry not found"
+    except FileNotFoundError:
+        return False, "pass is not installed"
+    except Exception as exc:
+        return False, str(exc)
 
+
+def _pass_insert(full_path: str, value: str) -> Tuple[bool, str]:
+    """Low-level pass insert. Returns (success, path_or_error)."""
     try:
         proc = subprocess.run(
             ["pass", "insert", "--echo", "--force", full_path],
-            input=token,
+            input=value,
             capture_output=True,
             text=True,
             timeout=10,
@@ -179,24 +217,44 @@ def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
         return False, str(exc)
 
 
+def retrieve_credentials_from_pass() -> Tuple[bool, str, str]:
+    """Retrieve username and password from pass. Returns (success, username, password_or_error)."""
+    user_entry = f"{PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['username']}"
+    pass_entry = f"{PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['password']}"
+
+    ok, username = _pass_show(user_entry)
+    if not ok:
+        return False, "", f"Failed to retrieve username: {username}"
+
+    ok, password = _pass_show(pass_entry)
+    if not ok:
+        return False, "", f"Failed to retrieve password: {password}"
+
+    return True, username, password
+
+
+def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
+    entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
+    full_path = f"{PASS_FOLDER}/{entry_name}"
+    return _pass_insert(full_path, token)
+
+
+def store_refresh_token_in_pass(repo: str, refresh_tok: str) -> Tuple[bool, str]:
+    entry_name = PASS_REFRESH_TOKEN_NAMES.get(repo, f"{repo}-refresh-token")
+    full_path = f"{PASS_FOLDER}/{entry_name}"
+    return _pass_insert(full_path, refresh_tok)
+
+
 def retrieve_from_pass(repo: str) -> Tuple[bool, str]:
     entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
     full_path = f"{PASS_FOLDER}/{entry_name}"
+    return _pass_show(full_path)
 
-    try:
-        proc = subprocess.run(
-            ["pass", "show", full_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return True, proc.stdout.strip()
-        return False, proc.stderr.strip() or "No token found"
-    except FileNotFoundError:
-        return False, "pass is not installed"
-    except Exception as exc:
-        return False, str(exc)
+
+def retrieve_refresh_token_from_pass(repo: str) -> Tuple[bool, str]:
+    entry_name = PASS_REFRESH_TOKEN_NAMES.get(repo, f"{repo}-refresh-token")
+    full_path = f"{PASS_FOLDER}/{entry_name}"
+    return _pass_show(full_path)
 
 
 ## ---------- Processing & Output ---------- ##
@@ -216,8 +274,19 @@ def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
 
     if ok and access_token:
         stored, store_msg = store_in_pass(repo, access_token)
-        print(f"  Pass store: {'OK' if stored else 'FAILED'} - {store_msg}")
+        print(f"  Pass store (access token): {'OK' if stored else 'FAILED'} - {store_msg}")
         ok = stored
+
+    if ok and refresh_tok:
+        stored, store_msg = store_refresh_token_in_pass(repo, refresh_tok)
+        print(f"  Pass store (refresh token): {'OK' if stored else 'FAILED'} - {store_msg}")
+        # Non-fatal: refresh token storage failure doesn't block the flow
+
+    # Artifact smoke test (if configured for this repo)
+    if ok and access_token and repo in ARTIFACT_SMOKE_TESTS:
+        artifact_path = ARTIFACT_SMOKE_TESTS[repo]
+        art_ok, art_msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
+        print(f"  Artifact smoke test: {'PASSED' if art_ok else 'FAILED'} - {art_msg}")
 
     print(f"  Expires at: {expires_at} ({expires_in}s)")
 
@@ -250,15 +319,34 @@ def collect_repos() -> List[str]:
 ## ---------- Check & Regenerate ---------- ##
 
 def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
-    """Returns (status, message). status is 'valid', 'expired', or 'missing'."""
+    """Returns (status, message). status is 'valid', 'expired', 'missing', or 'unreachable'."""
     found, token = retrieve_from_pass(repo)
     if not found:
-        return "missing", f"No existing token found in credential store"
+        return "missing", "No existing token found in credential store"
 
-    valid, msg = validate_repo(repo, token, verify_ssl)
+    try:
+        valid, msg = validate_repo(repo, token, verify_ssl)
+    except requests.ConnectionError:
+        return "unreachable", "Server unreachable; using existing token as-is"
+    except requests.Timeout:
+        return "unreachable", "Server timed out; using existing token as-is"
+
     if valid:
         return "valid", "Token is active and valid"
     return "expired", f"Token is expired or no longer valid ({msg})"
+
+
+def _try_refresh_token(repo: str, verify_ssl: bool) -> Tuple[bool, Dict[str, Any]]:
+    """Attempt to refresh using stored refresh token. Returns (success, result_dict)."""
+    found, refresh_tok = retrieve_refresh_token_from_pass(repo)
+    if not found:
+        return False, {}
+
+    try:
+        result = refresh_token(refresh_tok, verify_ssl)
+        return True, result
+    except Exception:
+        return False, {}
 
 
 def check_and_regenerate(
@@ -269,11 +357,12 @@ def check_and_regenerate(
     refreshable: bool,
     verify_ssl: bool,
 ) -> Dict[str, str]:
-    """Check each repo's token; regenerate if expired. Returns status dict."""
+    """Check each repo's token; refresh or regenerate if expired. Returns status dict."""
     results: Dict[str, str] = {}
     still_valid: List[str] = []
+    refreshed: List[str] = []
     generated_new: List[str] = []
-    regenerated: List[str] = []
+    unreachable: List[str] = []
 
     for repo in all_repos:
         print(f"\n[{repo}]")
@@ -286,11 +375,34 @@ def check_and_regenerate(
             still_valid.append(repo)
             continue
 
-        # Token is expired or missing - generate a new one
+        if status == "unreachable":
+            print(f"  Action: Graceful fallback - keeping existing token")
+            results[repo] = "UNREACHABLE"
+            unreachable.append(repo)
+            continue
+
+        # Token is expired or missing - try refresh first, then fall back to create
+        if status == "expired":
+            print(f"  Action: Attempting token refresh...")
+            ok, result = _try_refresh_token(repo, verify_ssl)
+            if ok:
+                print(f"  Refresh: Successful")
+                proc_ok = process_repo(repo, result, verify_ssl)
+                if proc_ok:
+                    results[repo] = "REFRESHED"
+                    refreshed.append(repo)
+                    continue
+                else:
+                    print(f"  Refresh: Token obtained but validation/storage failed, falling back to new token")
+
+            else:
+                print(f"  Refresh: No stored refresh token or refresh failed, falling back to new token")
+
+        # Fall through: create a brand new token
         if status == "missing":
             print(f"  Action: Generating new token...")
         else:
-            print(f"  Action: Regenerating expired token...")
+            print(f"  Action: Creating new token (refresh unavailable)...")
 
         try:
             result = create_token(username, password, expires_in, refreshable, verify_ssl)
@@ -301,7 +413,7 @@ def check_and_regenerate(
                     generated_new.append(repo)
                 else:
                     results[repo] = "REGENERATED"
-                    regenerated.append(repo)
+                    refreshed.append(repo)
             else:
                 results[repo] = "FAILED"
         except Exception as exc:
@@ -318,14 +430,19 @@ def check_and_regenerate(
         for r in still_valid:
             print(f"    - {r}")
 
+    if refreshed:
+        print(f"\n  Expired - refreshed/regenerated ({len(refreshed)}):")
+        for r in refreshed:
+            print(f"    - {r}")
+
     if generated_new:
         print(f"\n  Not found - newly generated ({len(generated_new)}):")
         for r in generated_new:
             print(f"    - {r}")
 
-    if regenerated:
-        print(f"\n  Expired - regenerated ({len(regenerated)}):")
-        for r in regenerated:
+    if unreachable:
+        print(f"\n  Server unreachable - kept existing token ({len(unreachable)}):")
+        for r in unreachable:
             print(f"    - {r}")
 
     failed = [r for r, s in results.items() if s == "FAILED"]
@@ -334,7 +451,7 @@ def check_and_regenerate(
         for r in failed:
             print(f"    - {r}")
 
-    if not generated_new and not regenerated and not failed:
+    if not refreshed and not generated_new and not failed and not unreachable:
         print("\n  All tokens are active and valid. No action was needed.")
 
     return results
@@ -342,7 +459,50 @@ def check_and_regenerate(
 
 ## ---------- Main ---------- ##
 
+def run_auto_mode(verify_ssl: bool) -> int:
+    """Non-interactive mode: retrieve credentials from pass, check & regenerate tokens."""
+    print("JFrog Token Utility (auto mode)")
+    print("================================")
+    print("Retrieving credentials from pass...")
+
+    ok, username, password_or_err = retrieve_credentials_from_pass()
+    if not ok:
+        print(f"  ERROR: {password_or_err}")
+        print("  Ensure credentials are stored in pass:")
+        print(f"    pass insert {PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['username']}")
+        print(f"    pass insert {PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['password']}")
+        return 1
+
+    print(f"  Credentials retrieved for user: {username}")
+
+    results = check_and_regenerate(
+        REPOSITORIES, username, password_or_err, 604800, True, verify_ssl
+    )
+
+    success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
+    passed = all(v in success_states for v in results.values())
+    return 0 if passed else 2
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="JFrog Artifactory Token Utility")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Non-interactive mode: read credentials from pass, check and refresh/regenerate tokens automatically.",
+    )
+    parser.add_argument(
+        "--no-verify-ssl",
+        action="store_true",
+        help="Disable SSL certificate verification.",
+    )
+    args = parser.parse_args()
+
+    verify_ssl = not args.no_verify_ssl
+
+    if args.auto:
+        return run_auto_mode(verify_ssl)
+
     print("JFrog Token Utility")
     print("-------------------")
     print("1. Create a new token")
@@ -351,7 +511,8 @@ def main() -> int:
     print("4. Check & regenerate expired tokens")
 
     choice = input("Choose an option [1/2/3/4]: ").strip()
-    verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
+    if not args.no_verify_ssl:
+        verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
     results: Dict[str, str] = {}
 
@@ -403,11 +564,11 @@ def main() -> int:
         username = prompt_nonempty("Username: ")
         password = getpass.getpass("Password (hidden): ")
 
-        # When a token has to be regenerated, we will use a default of 7 days for expiry and make it refreshable.
         results = check_and_regenerate(
             all_repos, username, password, 604800, True, verify_ssl
         )
-        passed = all(v in ("VALID", "GENERATED", "REGENERATED") for v in results.values())
+        success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
+        passed = all(v in success_states for v in results.values())
         return 0 if passed else 2
 
     else:
