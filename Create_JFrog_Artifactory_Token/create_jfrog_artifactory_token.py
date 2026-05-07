@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import json
 import subprocess
-import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
@@ -52,6 +53,8 @@ ARTIFACT_SMOKE_TESTS = {
     "dps-python-remote": "packages/packages.json",
     "dps-maven-remote": "org/maven-metadata.xml",
 }
+
+TOKEN_REFRESH_BUFFER_SECONDS = 3600
 
 ## ---------- Prompts ---------- ##
 
@@ -181,7 +184,6 @@ def test_artifact_download(
 ## ---------- Communicate with pass ---------- ##
 
 def _pass_show(full_path: str) -> Tuple[bool, str]:
-    """Low-level pass show. Returns (success, value_or_error)."""
     try:
         proc = subprocess.run(
             ["pass", "show", full_path],
@@ -199,7 +201,6 @@ def _pass_show(full_path: str) -> Tuple[bool, str]:
 
 
 def _pass_insert(full_path: str, value: str) -> Tuple[bool, str]:
-    """Low-level pass insert. Returns (success, path_or_error)."""
     try:
         proc = subprocess.run(
             ["pass", "insert", "--echo", "--force", full_path],
@@ -218,7 +219,6 @@ def _pass_insert(full_path: str, value: str) -> Tuple[bool, str]:
 
 
 def retrieve_credentials_from_pass() -> Tuple[bool, str, str]:
-    """Retrieve username and password from pass. Returns (success, username, password_or_error)."""
     user_entry = f"{PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['username']}"
     pass_entry = f"{PASS_FOLDER}/{PASS_CREDENTIAL_ENTRIES['password']}"
 
@@ -282,7 +282,8 @@ def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
         print(f"  Pass store (refresh token): {'OK' if stored else 'FAILED'} - {store_msg}")
         # Non-fatal: refresh token storage failure doesn't block the flow
 
-    # Artifact smoke test (if configured for this repo)
+    # Check if a artifact can be downloaded. 
+    # Only do this if the token is valid and we have a known artifact path for the repo.
     if ok and access_token and repo in ARTIFACT_SMOKE_TESTS:
         artifact_path = ARTIFACT_SMOKE_TESTS[repo]
         art_ok, art_msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
@@ -318,11 +319,40 @@ def collect_repos() -> List[str]:
 
 ## ---------- Check & Regenerate ---------- ##
 
+def decode_jwt_expiry(token: str) -> float | None:
+    try:
+        payload_b64 = token.split(".")[1]
+        # Base64url requires padding to be a multiple of 4
+        payload_b64 += "=" * (4 - len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return float(claims["exp"])
+    except Exception:
+        return None
+
+
+def is_token_expiring_soon(token: str) -> Tuple[bool, str]:
+    exp = decode_jwt_expiry(token)
+    if exp is None:
+        return True, "Could not decode token; treating as expired"
+
+    seconds_left = exp - time.time()
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    if seconds_left <= 0:
+        return True, f"Token expired at {expires_at}"
+    if seconds_left <= TOKEN_REFRESH_BUFFER_SECONDS:
+        return True, f"Token expires at {expires_at} (within refresh buffer of {TOKEN_REFRESH_BUFFER_SECONDS}s)"
+    return False, f"Token valid until {expires_at} ({int(seconds_left)}s remaining)"
+
+
 def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
-    """Returns (status, message). status is 'valid', 'expired', 'missing', or 'unreachable'."""
     found, token = retrieve_from_pass(repo)
     if not found:
         return "missing", "No existing token found in credential store"
+
+    expiring, jwt_msg = is_token_expiring_soon(token)
+    if not expiring:
+        return "valid", f"Token is active and valid ({jwt_msg})"
 
     try:
         valid, msg = validate_repo(repo, token, verify_ssl)
@@ -332,12 +362,12 @@ def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
         return "unreachable", "Server timed out; using existing token as-is"
 
     if valid:
-        return "valid", "Token is active and valid"
+        # Refresh token when the remaining time is within the defined buffer.
+        return "expiring", f"Token is active but expiring soon ({jwt_msg})"
     return "expired", f"Token is expired or no longer valid ({msg})"
 
 
 def _try_refresh_token(repo: str, verify_ssl: bool) -> Tuple[bool, Dict[str, Any]]:
-    """Attempt to refresh using stored refresh token. Returns (success, result_dict)."""
     found, refresh_tok = retrieve_refresh_token_from_pass(repo)
     if not found:
         return False, {}
@@ -357,7 +387,6 @@ def check_and_regenerate(
     refreshable: bool,
     verify_ssl: bool,
 ) -> Dict[str, str]:
-    """Check each repo's token; refresh or regenerate if expired. Returns status dict."""
     results: Dict[str, str] = {}
     still_valid: List[str] = []
     refreshed: List[str] = []
@@ -382,8 +411,9 @@ def check_and_regenerate(
             continue
 
         # Token is expired or missing - try refresh first, then fall back to create
-        if status == "expired":
-            print(f"  Action: Attempting token refresh...")
+        if status in ("expired", "expiring"):
+            action_msg = "Refreshing token since it is found to be expiring soon..." if status == "expiring" else "Attempting token refresh..."
+            print(f"  Action: {action_msg}")
             ok, result = _try_refresh_token(repo, verify_ssl)
             if ok:
                 print(f"  Refresh: Successful")
@@ -420,7 +450,6 @@ def check_and_regenerate(
             print(f"  ERROR: {exc}")
             results[repo] = "FAILED"
 
-    # --- Final report ---
     print("\n" + "=" * 50)
     print("TOKEN STATUS REPORT")
     print("=" * 50)
@@ -460,7 +489,6 @@ def check_and_regenerate(
 ## ---------- Main ---------- ##
 
 def run_auto_mode(verify_ssl: bool) -> int:
-    """Non-interactive mode: retrieve credentials from pass, check & regenerate tokens."""
     print("JFrog Token Utility (auto mode)")
     print("================================")
     print("Retrieving credentials from pass...")
