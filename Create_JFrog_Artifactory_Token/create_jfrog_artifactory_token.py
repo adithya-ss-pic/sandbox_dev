@@ -50,8 +50,11 @@ PASS_CREDENTIAL_ENTRIES = {
 
 # Artifact paths for smoke testing after token refresh/creation
 ARTIFACT_SMOKE_TESTS = {
-    "dps-python-remote": "packages/packages.json",
-    "dps-maven-remote": "org/maven-metadata.xml",
+    "dcp-sgs-local": "rhel-9-baseos-rpms/20251113.2/repodata/repomd.xml",
+    "dcp-sgs-docker-local": "sgs-buildagent-base/3.0.155/manifest.json",
+    "dps-maven-remote": "last_updated.txt",
+    "dps-python-remote": ".pypi/version-utils.html",
+    "dps-sgse-maven-virtual": "last_updated.txt",
 }
 
 TOKEN_REFRESH_BUFFER_SECONDS = 3600
