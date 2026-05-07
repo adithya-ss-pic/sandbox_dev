@@ -491,7 +491,7 @@ def check_and_regenerate(
 
 ## ---------- Main ---------- ##
 
-def run_auto_mode(verify_ssl: bool) -> int:
+def run_auto_mode(verify_ssl: bool, extra_repos: List[str] | None = None) -> int:
     print("JFrog Token Utility (auto mode)")
     print("================================")
     print("Retrieving credentials from pass...")
@@ -506,8 +506,12 @@ def run_auto_mode(verify_ssl: bool) -> int:
 
     print(f"  Credentials retrieved for user: {username}")
 
+    all_repos = REPOSITORIES + [r for r in (extra_repos or []) if r not in REPOSITORIES]
+    if extra_repos:
+        print(f"  Additional repos: {', '.join(r for r in extra_repos if r not in REPOSITORIES) or 'none (already in defaults)'}")
+
     results = check_and_regenerate(
-        REPOSITORIES, username, password_or_err, 604800, True, verify_ssl
+        all_repos, username, password_or_err, 604800, True, verify_ssl
     )
 
     success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
@@ -527,12 +531,18 @@ def main() -> int:
         action="store_true",
         help="Disable SSL certificate verification.",
     )
+    parser.add_argument(
+        "--repos",
+        metavar="REPO",
+        nargs="+",
+        help="Additional repository names to process on top of the hard-coded defaults (auto mode only).",
+    )
     args = parser.parse_args()
 
     verify_ssl = not args.no_verify_ssl
 
     if args.auto:
-        return run_auto_mode(verify_ssl)
+        return run_auto_mode(verify_ssl, extra_repos=args.repos)
 
     print("JFrog Token Utility")
     print("-------------------")
