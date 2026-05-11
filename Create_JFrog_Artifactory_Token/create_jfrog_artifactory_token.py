@@ -26,21 +26,7 @@ REPOSITORIES = [
     "dps-sgse-maven-virtual",
 ]
 
-PASS_ENTRY_NAMES = {
-    "dcp-sgs-local": "dcp-sgs-local-api-token",
-    "dcp-sgs-docker-local": "dcp-sgs-docker-local-api-token",
-    "dps-maven-remote": "dps-maven-remote-api-token",
-    "dps-python-remote": "dps-python-remote-api-token",
-    "dps-sgse-maven-virtual": "dps-sgse-maven-virtual-api-token",
-}
-
-PASS_REFRESH_TOKEN_NAMES = {
-    "dcp-sgs-local": "dcp-sgs-local-refresh-token",
-    "dcp-sgs-docker-local": "dcp-sgs-docker-local-refresh-token",
-    "dps-maven-remote": "dps-maven-remote-refresh-token",
-    "dps-python-remote": "dps-python-remote-refresh-token",
-    "dps-sgse-maven-virtual": "dps-sgse-maven-virtual-refresh-token",
-}
+DEFAULT_TOKEN_EXPIRY_SECONDS = 1296000  # 15 days
 
 # Credentials stored in pass for non-interactive (auto) mode
 PASS_CREDENTIAL_ENTRIES = {
@@ -239,26 +225,22 @@ def retrieve_credentials_from_pass() -> Tuple[bool, str, str]:
 
 
 def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
-    entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
-    full_path = f"{PASS_FOLDER}/{entry_name}"
+    full_path = f"{PASS_FOLDER}/{repo}-api-token"
     return _pass_insert(full_path, token)
 
 
 def store_refresh_token_in_pass(repo: str, refresh_tok: str) -> Tuple[bool, str]:
-    entry_name = PASS_REFRESH_TOKEN_NAMES.get(repo, f"{repo}-refresh-token")
-    full_path = f"{PASS_FOLDER}/{entry_name}"
+    full_path = f"{PASS_FOLDER}/{repo}-refresh-token"
     return _pass_insert(full_path, refresh_tok)
 
 
 def retrieve_from_pass(repo: str) -> Tuple[bool, str]:
-    entry_name = PASS_ENTRY_NAMES.get(repo, f"{repo}-api-token")
-    full_path = f"{PASS_FOLDER}/{entry_name}"
+    full_path = f"{PASS_FOLDER}/{repo}-api-token"
     return _pass_show(full_path)
 
 
 def retrieve_refresh_token_from_pass(repo: str) -> Tuple[bool, str]:
-    entry_name = PASS_REFRESH_TOKEN_NAMES.get(repo, f"{repo}-refresh-token")
-    full_path = f"{PASS_FOLDER}/{entry_name}"
+    full_path = f"{PASS_FOLDER}/{repo}-refresh-token"
     return _pass_show(full_path)
 
 
@@ -517,7 +499,89 @@ def check_and_regenerate(
     return results
 
 
-## ---------- Main ---------- ##
+## ---------- Option Handlers ---------- ##
+
+def run_create(verify_ssl: bool) -> int:
+    all_repos = collect_repos()
+    username = prompt_nonempty("Username: ")
+    password = getpass.getpass("Password (hidden): ")
+    expires_in = prompt_int("Token expiry in seconds", DEFAULT_TOKEN_EXPIRY_SECONDS)
+    refreshable = prompt_yes_no("Make token refreshable?", default=True)
+
+    results: Dict[str, str] = {}
+    for repo in all_repos:
+        print(f"\n[{repo}]")
+        status, msg = check_token_status(repo, verify_ssl)
+        if status == "valid":
+            print(f"  Check: {msg}")
+            print(f"  Action: No action required")
+            results[repo] = "PASSED"
+            continue
+        print(f"  Mode: Manual token creation (user-initiated)")
+        try:
+            result = create_token(username, password, expires_in, refreshable, verify_ssl)
+            ok = process_repo(repo, result, verify_ssl)
+            results[repo] = "PASSED" if ok else "FAILED"
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            results[repo] = "FAILED"
+
+    print_summary(results)
+    return 0 if all(v == "PASSED" for v in results.values()) else 2
+
+
+def run_refresh(verify_ssl: bool) -> int:
+    all_repos = collect_repos()
+    refresh_tok = getpass.getpass("Refresh token (hidden): ")
+
+    results: Dict[str, str] = {}
+    for repo in all_repos:
+        print(f"\n[{repo}]")
+        status, msg = check_token_status(repo, verify_ssl)
+        if status == "valid":
+            print(f"  Check: {msg}")
+            print(f"  Action: No action required")
+            results[repo] = "PASSED"
+            continue
+        print(f"  Mode: Manual token refresh (user-initiated)")
+        try:
+            result = refresh_token(refresh_tok, verify_ssl)
+            ok = process_repo(repo, result, verify_ssl)
+            results[repo] = "PASSED" if ok else "FAILED"
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            results[repo] = "FAILED"
+
+    print_summary(results)
+    return 0 if all(v == "PASSED" for v in results.values()) else 2
+
+
+def run_test_download(verify_ssl: bool) -> int:
+    access_token = getpass.getpass("Access token (hidden): ")
+    repo = prompt_nonempty("Repository name: ")
+    artifact_path = prompt_nonempty("Artifact path (e.g. <version>/<file.zip>): ")
+
+    print(f"\n[{repo}/{artifact_path}]")
+    ok, msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
+    print(f"  Download test: {'PASSED' if ok else 'FAILED'} - {msg}")
+
+    results = {repo: "PASSED" if ok else "FAILED"}
+    print_summary(results)
+    return 0 if ok else 2
+
+
+def run_check_regenerate(verify_ssl: bool) -> int:
+    all_repos = collect_repos()
+    username = prompt_nonempty("Username: ")
+    password = getpass.getpass("Password (hidden): ")
+
+    results = check_and_regenerate(
+        all_repos, username, password, DEFAULT_TOKEN_EXPIRY_SECONDS, True, verify_ssl
+    )
+    success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
+    passed = all(v in success_states for v in results.values())
+    return 0 if passed else 2
+
 
 def run_auto_mode(verify_ssl: bool, extra_repos: List[str] | None = None) -> int:
     print("JFrog Token Utility (auto mode)")
@@ -539,13 +603,15 @@ def run_auto_mode(verify_ssl: bool, extra_repos: List[str] | None = None) -> int
         print(f"  Additional repos: {', '.join(r for r in extra_repos if r not in REPOSITORIES) or 'none (already in defaults)'}")
 
     results = check_and_regenerate(
-        all_repos, username, password_or_err, 1296000, True, verify_ssl
+        all_repos, username, password_or_err, DEFAULT_TOKEN_EXPIRY_SECONDS, True, verify_ssl
     )
 
     success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
     passed = all(v in success_states for v in results.values())
     return 0 if passed else 2
 
+
+## ---------- Main ---------- ##
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="JFrog Artifactory Token Utility")
@@ -583,81 +649,13 @@ def main() -> int:
     if not args.no_verify_ssl:
         verify_ssl = not prompt_yes_no("Disable SSL verification?", default=False)
 
-    results: Dict[str, str] = {}
-
-    if choice == "1":
-        all_repos = collect_repos()
-        username = prompt_nonempty("Username: ")
-        password = getpass.getpass("Password (hidden): ")
-        expires_in = prompt_int("Token expiry in seconds", 1296000)
-        refreshable = prompt_yes_no("Make token refreshable?", default=True)
-
-        for repo in all_repos:
-            print(f"\n[{repo}]")
-            status, msg = check_token_status(repo, verify_ssl)
-            if status == "valid":
-                print(f"  Check: {msg}")
-                print(f"  Action: No action required")
-                results[repo] = "PASSED"
-                continue
-            print(f"  Mode: Manual token creation (user-initiated)")
-            try:
-                result = create_token(username, password, expires_in, refreshable, verify_ssl)
-                ok = process_repo(repo, result, verify_ssl)
-                results[repo] = "PASSED" if ok else "FAILED"
-            except Exception as exc:
-                print(f"  ERROR: {exc}")
-                results[repo] = "FAILED"
-
-    elif choice == "2":
-        all_repos = collect_repos()
-        refresh_tok = getpass.getpass("Refresh token (hidden): ")
-
-        for repo in all_repos:
-            print(f"\n[{repo}]")
-            status, msg = check_token_status(repo, verify_ssl)
-            if status == "valid":
-                print(f"  Check: {msg}")
-                print(f"  Action: No action required")
-                results[repo] = "PASSED"
-                continue
-            print(f"  Mode: Manual token refresh (user-initiated)")
-            try:
-                result = refresh_token(refresh_tok, verify_ssl)
-                ok = process_repo(repo, result, verify_ssl)
-                results[repo] = "PASSED" if ok else "FAILED"
-            except Exception as exc:
-                print(f"  ERROR: {exc}")
-                results[repo] = "FAILED"
-
-    elif choice == "3":
-        access_token = getpass.getpass("Access token (hidden): ")
-        repo = prompt_nonempty("Repository name: ")
-        artifact_path = prompt_nonempty("Artifact path (e.g. <version>/<file.zip>): ")
-
-        print(f"\n[{repo}/{artifact_path}]")
-        ok, msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
-        print(f"  Download test: {'PASSED' if ok else 'FAILED'} - {msg}")
-        results[repo] = "PASSED" if ok else "FAILED"
-
-    elif choice == "4":
-        all_repos = collect_repos()
-        username = prompt_nonempty("Username: ")
-        password = getpass.getpass("Password (hidden): ")
-
-        results = check_and_regenerate(
-            all_repos, username, password, 1296000, True, verify_ssl
-        )
-        success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
-        passed = all(v in success_states for v in results.values())
-        return 0 if passed else 2
-
-    else:
+    handlers = {"1": run_create, "2": run_refresh, "3": run_test_download, "4": run_check_regenerate}
+    handler = handlers.get(choice)
+    if not handler:
         print("Invalid choice.")
         return 1
 
-    print_summary(results)
-    return 0 if all(v == "PASSED" for v in results.values()) else 2
+    return handler(verify_ssl)
 
 
 if __name__ == "__main__":
