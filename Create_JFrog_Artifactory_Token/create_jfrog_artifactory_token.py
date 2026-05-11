@@ -539,7 +539,7 @@ def run_auto_mode(verify_ssl: bool, extra_repos: List[str] | None = None) -> int
         print(f"  Additional repos: {', '.join(r for r in extra_repos if r not in REPOSITORIES) or 'none (already in defaults)'}")
 
     results = check_and_regenerate(
-        all_repos, username, password_or_err, 604800, True, verify_ssl
+        all_repos, username, password_or_err, 1296000, True, verify_ssl
     )
 
     success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
@@ -589,7 +589,7 @@ def main() -> int:
         all_repos = collect_repos()
         username = prompt_nonempty("Username: ")
         password = getpass.getpass("Password (hidden): ")
-        expires_in = prompt_int("Token expiry in seconds", 3600)
+        expires_in = prompt_int("Token expiry in seconds", 1296000)
         refreshable = prompt_yes_no("Make token refreshable?", default=True)
 
         for repo in all_repos:
@@ -646,7 +646,7 @@ def main() -> int:
         password = getpass.getpass("Password (hidden): ")
 
         results = check_and_regenerate(
-            all_repos, username, password, 604800, True, verify_ssl
+            all_repos, username, password, 1296000, True, verify_ssl
         )
         success_states = ("VALID", "GENERATED", "REFRESHED", "REGENERATED", "UNREACHABLE")
         passed = all(v in success_states for v in results.values())
