@@ -45,13 +45,13 @@ if [ $? -ne 0 ]; then
     return 1
 fi
 
-export RT_PYTHON_REMOTE_TOKEN=$(get_credential "dps-python-remote-api-token")
+export RT_PYTHON_REMOTE_TOKEN=$(get_credential "dps-python-remote-reference-token")
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to load RT_PYTHON_REMOTE_TOKEN"
     return 1
 fi
 
-export RT_SGSE_MAVEN_VIRTUAL_TOKEN=$(get_credential "dps-sgse-maven-virtual-api-token")
+export RT_SGSE_MAVEN_VIRTUAL_TOKEN=$(get_credential "dps-sgse-maven-virtual-reference-token")
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to load RT_SGSE_MAVEN_VIRTUAL_TOKEN"
     return 1
