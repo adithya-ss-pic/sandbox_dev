@@ -264,6 +264,13 @@ def retrieve_refresh_token_from_pass(repo: str) -> Tuple[bool, str]:
 
 ## ---------- Processing & Output ---------- ##
 
+def _mask_token(value: str) -> str:
+    """Mask a token value, showing only the first 5 characters."""
+    if len(value) <= 5:
+        return value
+    return f"{value[:5]}{'*' * 20}"
+
+
 def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
     access_token = result.get("access_token")
     reference_token = result.get("reference_token")
@@ -300,13 +307,21 @@ def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
 
     print(f"  Expires at: {expires_at} ({expires_in}s)")
 
-    creds = {k: v for k, v in {
-        "reference_token": reference_token,
-        "access_token": access_token,
-        "refresh_token": refresh_tok,
-        "token_id": token_id,
-    }.items() if v}
-    print(f"  Credentials: {json.dumps(creds, indent=4)}")
+    token_fields = [
+        ("reference_token", reference_token),
+        ("access_token", access_token),
+        ("refresh_token", refresh_tok),
+        ("token_id", token_id),
+    ]
+    entries = [(k, v) for k, v in token_fields if v]
+    print("  Credentials: {")
+    for i, (key, value) in enumerate(entries):
+        comma = "," if i < len(entries) - 1 else ""
+        if key == "token_id":
+            print(f'      "{key}": "{value}"{comma}')
+        else:
+            print(f'      "{key}": "{_mask_token(value)}" (Length: {len(value)}){comma}')
+    print("  }")
 
     return ok
 
@@ -579,6 +594,12 @@ def main() -> int:
 
         for repo in all_repos:
             print(f"\n[{repo}]")
+            status, msg = check_token_status(repo, verify_ssl)
+            if status == "valid":
+                print(f"  Check: {msg}")
+                print(f"  Action: No action required")
+                results[repo] = "PASSED"
+                continue
             print(f"  Mode: Manual token creation (user-initiated)")
             try:
                 result = create_token(username, password, expires_in, refreshable, verify_ssl)
@@ -594,6 +615,12 @@ def main() -> int:
 
         for repo in all_repos:
             print(f"\n[{repo}]")
+            status, msg = check_token_status(repo, verify_ssl)
+            if status == "valid":
+                print(f"  Check: {msg}")
+                print(f"  Action: No action required")
+                results[repo] = "PASSED"
+                continue
             print(f"  Mode: Manual token refresh (user-initiated)")
             try:
                 result = refresh_token(refresh_tok, verify_ssl)
