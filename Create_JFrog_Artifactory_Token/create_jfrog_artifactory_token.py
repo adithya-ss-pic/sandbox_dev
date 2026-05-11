@@ -224,8 +224,13 @@ def retrieve_credentials_from_pass() -> Tuple[bool, str, str]:
     return True, username, password
 
 
-def store_in_pass(repo: str, token: str) -> Tuple[bool, str]:
-    full_path = f"{PASS_FOLDER}/{repo}-api-token"
+def store_access_token_in_pass(repo: str, token: str) -> Tuple[bool, str]:
+    full_path = f"{PASS_FOLDER}/{repo}-access-token"
+    return _pass_insert(full_path, token)
+
+
+def store_reference_token_in_pass(repo: str, token: str) -> Tuple[bool, str]:
+    full_path = f"{PASS_FOLDER}/{repo}-reference-token"
     return _pass_insert(full_path, token)
 
 
@@ -234,8 +239,13 @@ def store_refresh_token_in_pass(repo: str, refresh_tok: str) -> Tuple[bool, str]
     return _pass_insert(full_path, refresh_tok)
 
 
-def retrieve_from_pass(repo: str) -> Tuple[bool, str]:
-    full_path = f"{PASS_FOLDER}/{repo}-api-token"
+def retrieve_access_token_from_pass(repo: str) -> Tuple[bool, str]:
+    full_path = f"{PASS_FOLDER}/{repo}-access-token"
+    return _pass_show(full_path)
+
+
+def retrieve_reference_token_from_pass(repo: str) -> Tuple[bool, str]:
+    full_path = f"{PASS_FOLDER}/{repo}-reference-token"
     return _pass_show(full_path)
 
 
@@ -270,14 +280,19 @@ def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
         print(f"  Validation: {'PASSED' if valid else 'FAILED'} - {msg}")
         ok = valid
 
-    if ok and api_token:
-        stored, store_msg = store_in_pass(repo, api_token)
+    if ok and access_token:
+        stored, store_msg = store_access_token_in_pass(repo, access_token)
+        print(f"  Pass store (access token):    {'OK' if stored else 'FAILED'} - {store_msg}")
+        ok = stored
+
+    if ok and reference_token:
+        stored, store_msg = store_reference_token_in_pass(repo, reference_token)
         print(f"  Pass store (reference token): {'OK' if stored else 'FAILED'} - {store_msg}")
         ok = stored
 
     if ok and refresh_tok:
         stored, store_msg = store_refresh_token_in_pass(repo, refresh_tok)
-        print(f"  Pass store (refresh token): {'OK' if stored else 'FAILED'} - {store_msg}")
+        print(f"  Pass store (refresh token):   {'OK' if stored else 'FAILED'} - {store_msg}")
         # Non-fatal: refresh token storage failure doesn't block the flow
 
     # Check if a artifact can be downloaded. 
@@ -353,7 +368,10 @@ def is_token_expiring_soon(token: str) -> Tuple[bool, str]:
 
 
 def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
-    found, token = retrieve_from_pass(repo)
+    # Prefer reference token; fall back to access token
+    found, token = retrieve_reference_token_from_pass(repo)
+    if not found:
+        found, token = retrieve_access_token_from_pass(repo)
     if not found:
         return "missing", "No existing token found in credential store"
 
