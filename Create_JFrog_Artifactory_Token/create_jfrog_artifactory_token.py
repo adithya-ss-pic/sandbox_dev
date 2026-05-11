@@ -106,6 +106,7 @@ def create_token(
         "username": username,
         "expires_in": str(expires_in),
         "refreshable": str(refreshable).lower(),
+        "include_reference_token": "true",
     }
 
     response = requests.post(
@@ -127,6 +128,7 @@ def refresh_token(refresh_tok: str, verify_ssl: bool) -> Dict[str, Any]:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_tok,
+        "include_reference_token": "true",
     }
 
     response = requests.post(
@@ -144,7 +146,7 @@ def refresh_token(refresh_tok: str, verify_ssl: bool) -> Dict[str, Any]:
 
 def validate_repo(repo: str, access_token: str, verify_ssl: bool) -> Tuple[bool, str]:
     url = f"{BASE_URL}/artifactory/api/repositories/{repo}"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {"X-JFrog-Art-Api": access_token}
 
     try:
         response = requests.get(url, headers=headers, timeout=30, verify=verify_ssl)
@@ -264,20 +266,24 @@ def retrieve_refresh_token_from_pass(repo: str) -> Tuple[bool, str]:
 
 def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
     access_token = result.get("access_token")
+    reference_token = result.get("reference_token")
     refresh_tok = result.get("refresh_token")
     token_id = result.get("token_id")
     expires_in = int(result.get("expires_in", 0))
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
 
+    # Prefer the reference token (opaque, works with X-JFrog-Art-Api header)
+    api_token = reference_token or access_token
+
     ok = True
-    if access_token:
-        valid, msg = validate_repo(repo, access_token, verify_ssl)
+    if api_token:
+        valid, msg = validate_repo(repo, api_token, verify_ssl)
         print(f"  Validation: {'PASSED' if valid else 'FAILED'} - {msg}")
         ok = valid
 
-    if ok and access_token:
-        stored, store_msg = store_in_pass(repo, access_token)
-        print(f"  Pass store (access token): {'OK' if stored else 'FAILED'} - {store_msg}")
+    if ok and api_token:
+        stored, store_msg = store_in_pass(repo, api_token)
+        print(f"  Pass store (reference token): {'OK' if stored else 'FAILED'} - {store_msg}")
         ok = stored
 
     if ok and refresh_tok:
@@ -287,14 +293,15 @@ def process_repo(repo: str, result: Dict[str, Any], verify_ssl: bool) -> bool:
 
     # Check if a artifact can be downloaded. 
     # Only do this if the token is valid and we have a known artifact path for the repo.
-    if ok and access_token and repo in ARTIFACT_SMOKE_TESTS:
+    if ok and api_token and repo in ARTIFACT_SMOKE_TESTS:
         artifact_path = ARTIFACT_SMOKE_TESTS[repo]
-        art_ok, art_msg = test_artifact_download(repo, artifact_path, access_token, verify_ssl)
+        art_ok, art_msg = test_artifact_download(repo, artifact_path, api_token, verify_ssl)
         print(f"  Artifact smoke test: {'PASSED' if art_ok else 'FAILED'} - {art_msg}")
 
     print(f"  Expires at: {expires_at} ({expires_in}s)")
 
     creds = {k: v for k, v in {
+        "reference_token": reference_token,
         "access_token": access_token,
         "refresh_token": refresh_tok,
         "token_id": token_id,
@@ -353,9 +360,13 @@ def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
     if not found:
         return "missing", "No existing token found in credential store"
 
-    expiring, jwt_msg = is_token_expiring_soon(token)
-    if not expiring:
-        return "valid", f"Token is active and valid ({jwt_msg})"
+    # Reference tokens are opaque (not JWT) - can only validate via API
+    is_opaque = token.count(".") != 2
+
+    if not is_opaque:
+        expiring, jwt_msg = is_token_expiring_soon(token)
+        if not expiring:
+            return "valid", f"Token is active and valid ({jwt_msg})"
 
     try:
         valid, msg = validate_repo(repo, token, verify_ssl)
@@ -365,6 +376,8 @@ def check_token_status(repo: str, verify_ssl: bool) -> Tuple[str, str]:
         return "unreachable", "Server timed out; using existing token as-is"
 
     if valid:
+        if is_opaque:
+            return "valid", f"Reference token is active ({msg})"
         # Refresh token when the remaining time is within the defined buffer.
         return "expiring", f"Token is active but expiring soon ({jwt_msg})"
     return "expired", f"Token is expired or no longer valid ({msg})"
