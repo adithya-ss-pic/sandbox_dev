@@ -24,6 +24,7 @@ REPOSITORIES = [
     "dps-maven-remote",
     "dps-python-remote",
     "dps-sgse-maven-virtual",
+    "dps-test-yum"
 ]
 
 DEFAULT_TOKEN_EXPIRY_SECONDS = 1296000  # 15 days
@@ -41,6 +42,7 @@ ARTIFACT_SMOKE_TESTS = {
     "dps-maven-remote": "last_updated.txt",
     "dps-python-remote": ".pypi/version-utils.html",
     "dps-sgse-maven-virtual": "last_updated.txt",
+    "dps-test-yum": "repodata/repomd.xml",
 }
 
 TOKEN_REFRESH_BUFFER_SECONDS = 3600
