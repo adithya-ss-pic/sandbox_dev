@@ -75,4 +75,10 @@ if [ $? -ne 0 ]; then
     return 1
 fi
 
+export RT_TEST_YUM_REFERENCE_TOKEN=$(get_credential "dps-test-yum-reference-token")
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to load RT_TEST_YUM_REFERENCE_TOKEN"
+    return 1
+fi
+
 echo "Credentials loaded successfully"
