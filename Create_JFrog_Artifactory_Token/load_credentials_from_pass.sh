@@ -39,21 +39,39 @@ if [ $? -ne 0 ]; then
     echo "WARNING: Token auto-refresh encountered errors (see above). Proceeding with available tokens."
 fi
 
-export RT_PYTHON_REMOTE_USER=$(get_credential "code1-id")
+export RT_CODE_1_USER_ID=$(get_credential "code1-id")
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to load RT_PYTHON_REMOTE_USER"
+    echo "ERROR: Failed to load RT_CODE_1_USER_ID"
     return 1
 fi
 
-export RT_PYTHON_REMOTE_TOKEN=$(get_credential "dps-python-remote-reference-token")
+export RT_SGS_LOCAL_REFERENCE_TOKEN=$(get_credential "dcp-sgs-local-reference-token")
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to load RT_PYTHON_REMOTE_TOKEN"
+    echo "ERROR: Failed to load RT_SGS_LOCAL_REFERENCE_TOKEN"
     return 1
 fi
 
-export RT_SGSE_MAVEN_VIRTUAL_TOKEN=$(get_credential "dps-sgse-maven-virtual-reference-token")
+export RT_SGS_DOCKER_LOCAL_REFERENCE_TOKEN=$(get_credential "dcp-sgs-docker-local-reference-token")
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to load RT_SGSE_MAVEN_VIRTUAL_TOKEN"
+    echo "ERROR: Failed to load RT_SGS_DOCKER_LOCAL_REFERENCE_TOKEN"
+    return 1
+fi
+
+export RT_MAVEN_REMOTE_REFERENCE_TOKEN=$(get_credential "dps-maven-remote-reference-token")
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to load RT_MAVEN_REMOTE_REFERENCE_TOKEN"
+    return 1
+fi
+
+export RT_PYTHON_REMOTE_REFERENCE_TOKEN=$(get_credential "dps-python-remote-reference-token")
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to load RT_PYTHON_REMOTE_REFERENCE_TOKEN"
+    return 1
+fi
+
+export RT_SGSE_MAVEN_VIRTUAL_REFERENCE_TOKEN=$(get_credential "dps-sgse-maven-virtual-reference-token")
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to load RT_SGSE_MAVEN_VIRTUAL_REFERENCE_TOKEN"
     return 1
 fi
 
