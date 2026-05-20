@@ -601,6 +601,87 @@ def run_check_regenerate(verify_ssl: bool) -> int:
     return 0 if passed else 2
 
 
+def run_status(verify_ssl: bool, extra_repos: List[str] | None = None) -> int:
+    """Read-only check: report token expiry status without modifying anything."""
+    all_repos = REPOSITORIES + [r for r in (extra_repos or []) if r not in REPOSITORIES]
+
+    print("JFrog Token Status Report")
+    print("=" * 50)
+
+    any_problem = False
+    for repo in all_repos:
+        print(f"\n[{repo}]")
+        found, token = retrieve_reference_token_from_pass(repo)
+        if not found:
+            found, token = retrieve_access_token_from_pass(repo)
+        if not found:
+            print(f"  Status: NO TOKEN FOUND")
+            any_problem = True
+            continue
+
+        is_opaque = token.count(".") != 2
+        if is_opaque:
+            # Opaque reference tokens can only be checked via API
+            try:
+                valid, msg = validate_repo(repo, token, verify_ssl)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                print(f"  Status: UNREACHABLE ({exc})")
+                continue
+
+            # Try to get expiry from the companion access token (JWT)
+            jwt_found, jwt_token = retrieve_access_token_from_pass(repo)
+            exp = decode_jwt_expiry(jwt_token) if jwt_found else None
+
+            if exp is not None:
+                seconds_left = exp - time.time()
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                if seconds_left <= 0:
+                    print(f"  Status: EXPIRED")
+                    print(f"  Expired at: {expires_at}")
+                    any_problem = True
+                elif seconds_left <= TOKEN_REFRESH_BUFFER_SECONDS:
+                    print(f"  Status: EXPIRING SOON")
+                    print(f"  Expires at: {expires_at} ({int(seconds_left)}s remaining)")
+                    any_problem = True
+                else:
+                    days_left = int(seconds_left // 86400)
+                    hours_left = int((seconds_left % 86400) // 3600)
+                    print(f"  Status: {'VALID' if valid else 'INVALID'}")
+                    print(f"  Expires at: {expires_at} ({days_left}d {hours_left}h remaining)")
+                    if not valid:
+                        any_problem = True
+            else:
+                print(f"  Status: {'VALID' if valid else 'INVALID'} (opaque token, no expiry date available)")
+                if not valid:
+                    any_problem = True
+        else:
+            exp = decode_jwt_expiry(token)
+            if exp is None:
+                print(f"  Status: UNKNOWN (could not decode JWT)")
+                any_problem = True
+                continue
+
+            seconds_left = exp - time.time()
+            expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            if seconds_left <= 0:
+                print(f"  Status: EXPIRED")
+                print(f"  Expired at: {expires_at}")
+                any_problem = True
+            elif seconds_left <= TOKEN_REFRESH_BUFFER_SECONDS:
+                print(f"  Status: EXPIRING SOON")
+                print(f"  Expires at: {expires_at} ({int(seconds_left)}s remaining)")
+                any_problem = True
+            else:
+                days_left = int(seconds_left // 86400)
+                hours_left = int((seconds_left % 86400) // 3600)
+                print(f"  Status: VALID")
+                print(f"  Expires at: {expires_at} ({days_left}d {hours_left}h remaining)")
+
+    print("\n" + "=" * 50)
+    return 1 if any_problem else 0
+
+
 def run_auto_mode(verify_ssl: bool, extra_repos: List[str] | None = None) -> int:
     print("JFrog Token Utility (auto mode)")
     print("================================")
@@ -639,6 +720,11 @@ def main() -> int:
         help="Non-interactive mode: read credentials from pass, check and refresh/regenerate tokens automatically.",
     )
     parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Read-only mode: report token expiry status without modifying anything.",
+    )
+    parser.add_argument(
         "--no-verify-ssl",
         action="store_true",
         help="Disable SSL certificate verification.",
@@ -652,6 +738,9 @@ def main() -> int:
     args = parser.parse_args()
 
     verify_ssl = not args.no_verify_ssl
+
+    if args.status:
+        return run_status(verify_ssl, extra_repos=args.repos)
 
     if args.auto:
         return run_auto_mode(verify_ssl, extra_repos=args.repos)
